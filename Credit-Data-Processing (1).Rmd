@@ -1,0 +1,565 @@
+---
+title: "Data Processing 1"
+output:
+  pdf_document: default
+  html_document: default
+date: "2025-07-27"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+library(foreign)
+library(car)
+library(carData)
+library(zoo)
+library(lmtest)
+library(dynlm)
+library(sandwich)
+library(stargazer)
+library(dplyr)
+library(systemfit)
+library(caTools)
+library(readxl)
+library(stats)
+library(AER)
+library(stringr)
+library(mlogit)
+library(nnet)
+library(caret)
+library(reshape2)
+library(survival)
+library(xts)
+library(forecast)
+library(Metrics)
+library(tseries)
+library(tsutils)
+library(ggplot2)
+library(urca)
+library(rugarch)
+library(Information)
+
+```
+
+```{r}
+credit=read.csv("E:/NEU SLIDE/DATA SCIENCE/credit.csv")
+```
+
+Các mô hình logistic truyền thống và machine-learning không thể đọc được các biến với định dạng character, cần chuẩn hóa lại về dạng numeric
+
+```{r}
+# Lọc ra các biến không phải là numeric
+non_numeric_vars <- names(credit)[!sapply(credit, is.numeric)]
+
+# In danh sách các biến
+print(non_numeric_vars)
+
+```
+Xóa các biến không có ý nghĩa thống kê:
+id, member_id: Mã khách hàng
+url: Trang web cho vay
+desc, purpose: Mục đích vay tiền
+title, emp_title: Chức danh
+zip code: Mã bưu điện
+addr_state: Bang hiện tại đang sinh sống
+
+
+```{r}
+credit=dplyr::select(credit, -id, -member_id, -url, -desc, -title, -emp_title, -purpose, -zip_code, -addr_state)
+
+```
+
+Biến term (Thời hạn của khoản vay) có dạng character, định dạng thành dạng numeric
+
+```{r}
+str(credit$term)
+credit$term <- as.numeric(gsub(" months", "", credit$term))
+
+sum(is.na(credit$term))
+
+```
+
+Các biến grade, sub_grade (Bậc tín dụng của khách hàng) có dạng character, định dạng về dạng thứ bậc, bậc A là những khách hàng có xác suất vỡ nợ nhỏ nhất, bậc G là lớn nhất
+
+```{r}
+str(credit$grade)
+unique(credit$grade)
+# Chuyển grade thành số (A = 1, ..., G = 7)
+grade_levels <- c("A", "B", "C", "D", "E", "F", "G")
+credit$grade <- ifelse(credit$grade == "", NA, credit$grade)
+credit$grade <- match(credit$grade, grade_levels)
+
+```
+
+```{r}
+str(credit$sub_grade)
+unique(credit$sub_grade)
+
+credit$sub_grade <- ifelse(credit$sub_grade == "", NA, credit$sub_grade)
+# Tạo vector theo thứ tự rủi ro tăng dần
+sub_grade_levels <- c("A1","A2","A3","A4","A5",
+                      "B1","B2","B3","B4","B5",
+                      "C1","C2","C3","C4","C5",
+                      "D1","D2","D3","D4","D5",
+                      "E1","E2","E3","E4","E5",
+                      "F1","F2","F3","F4","F5",
+                      "G1","G2","G3","G4","G5")
+
+# Chuyển sub_grade thành số theo thứ tự
+credit$sub_grade <- match(credit$sub_grade, sub_grade_levels)
+
+
+
+
+```
+Biến emp_length có dạng character, định dạng lại thành numeric
+
+```{r}
+str(credit$emp_length)
+unique(credit$emp_length)
+
+credit$emp_length <- ifelse(credit$emp_length == "", NA, credit$emp_length)
+credit$emp_length <- dplyr::case_when(
+  credit$emp_length == "< 1 year" ~ 0,
+  credit$emp_length == "1 year" ~ 1,
+  credit$emp_length == "2 years" ~ 2,
+  credit$emp_length == "3 years" ~ 3,
+  credit$emp_length == "4 years" ~ 4,
+  credit$emp_length == "5 years" ~ 5,
+  credit$emp_length == "6 years" ~ 6,
+  credit$emp_length == "7 years" ~ 7,
+  credit$emp_length == "8 years" ~ 8,
+  credit$emp_length == "9 years" ~ 9,
+  credit$emp_length == "10+ years" ~ 10,
+  TRUE ~ NA_real_
+)
+
+
+```
+Biến home_ownership (Tình trạng nhà ở) có dạng character, tạo các biến giả đối với mỗi loại hình nhà ở
+
+```{r}
+str(credit$home_ownership)
+unique(credit$home_ownership)
+
+credit$home_ownership <- ifelse(credit$home_ownership == "", NA, credit$home_ownership)
+# Lưu giá trị NA để ghép lại sau
+na_index <- is.na(credit$home_ownership)
+# Tạm thay NA bằng chuỗi "Missing" để model.matrix không loại dòng
+credit$home_ownership_temp <- ifelse(na_index, "Missing", credit$home_ownership)
+# Tạo dummy
+home_dummies <- model.matrix(~ home_ownership_temp - 1, data = credit)
+# Gắn vào
+credit <- cbind(credit, home_dummies)
+credit=dplyr::select(credit,-home_ownership) 
+
+
+```
+
+Biến issue_d là ngày phát hành khoản vay (issue date) — tức là ngày mà khoản vay được cấp phát hoặc phát hành chính thức.
+Định dạng thành dạng ngày tháng
+
+```{r}
+str(credit$issue_d)
+
+library(lubridate)
+credit$issue_d <- parse_date_time(credit$issue_d, orders = "b-Y")
+
+sum(is.na(credit$issue_d))
+
+```
+Biến loan_status (Tình trạng khoản vay) có dạng character, định dạng lại thành dạng thứ bậc với mức rủi ro tăng dần
+
+```{r}
+str(credit$loan_status)
+unique(credit$loan_status)
+
+credit$loan_status <- ifelse(credit$loan_status == "", NA, credit$loan_status)
+# Các mức trạng thái sắp xếp theo thứ bậc từ ít rủi ro đến nhiều rủi ro hơn
+status_levels <- c(
+  "Fully Paid",                         # Trả hết
+  "Current",                           # Đang trả đúng hạn
+  "In Grace Period",                   # Trong thời gian ân hạn
+  "Late (16-30 days)",                 # Trễ hạn nhẹ
+  "Late (31-120 days)",                # Trễ hạn nặng hơn
+  "Does not meet the credit policy. Status:Fully Paid",       # Không hợp lệ nhưng trả hết
+  "Does not meet the credit policy. Status:Charged Off",      # Không hợp lệ và xóa sổ
+  "Charged Off",                      # Xóa sổ (mất khả năng thu hồi)
+  "Default"                          # Vỡ nợ nặng nhất
+)
+
+# Tạo biến thứ bậc ordered factor
+credit$loan_status <- factor(credit$loan_status,
+                                    levels = status_levels,
+                                    ordered = TRUE)
+
+credit$loan_status=as.numeric(credit$loan_status)
+sum(is.na(credit$loan_status))
+
+```
+Biến pymnt_plan có dạng character, chuyển thành biến nhị phân, "y" gán bằngh 1, "n" gán bằng 0
+
+```{r}
+str(credit$pymnt_plan)
+
+credit$pymnt_plan[credit$pymnt_plan == ""] <- NA
+credit$pymnt_plan <- ifelse(
+  is.na(credit$pymnt_plan), NA,
+  ifelse(credit$pymnt_plan == "y", 1, 0)
+)
+
+sum(is.na(credit$pymnt_plan))
+```
+
+```{r}
+str(credit$earliest_cr_line)
+credit$earliest_cr_line <- parse_date_time(credit$earliest_cr_line, orders = "b-Y")
+
+sum(is.na(credit$earliest_cr_line))
+
+```
+Biến initial_list_status có định dạng character, định dạng lại thành dạng nhị phân, "W" gán bằng 1, "f" gán bằng 0
+
+```{r}
+str(credit$initial_list_status)
+unique(credit$initial_list_status)
+
+credit$initial_list_status[credit$initial_list_status == ""] <- NA
+credit$initial_list_status <- ifelse(
+  is.na(credit$initial_list_status), NA,
+  ifelse(credit$initial_list_status == "w", 1, 0)
+)
+
+sum(is.na(credit$initial_list_status))
+```
+
+```{r}
+str(credit$last_pymnt_d)
+credit$last_pymnt_d <- parse_date_time(credit$last_pymnt_d, orders = "b-Y")
+
+sum(is.na(credit$last_pymnt_d))
+```
+
+```{r}
+str(credit$next_pymnt_d)
+credit$lnext_pymnt_d <- parse_date_time(credit$next_pymnt_d, orders = "b-Y")
+
+sum(is.na(credit$next_pymnt_d))
+
+```
+
+```{r}
+str(credit$last_credit_pull_d)
+credit$last_credit_pull_d <- parse_date_time(credit$last_credit_pull_d, orders = "b-Y")
+
+sum(is.na(credit$last_credit_pull_d))
+```
+application_type (Hinh thức vay), định dạng về dạng nhị phân, "Joint App" gán bằng 1, "Individual" gán bằng 0
+
+
+```{r}
+str(credit$application_type)
+unique(credit$application_type)
+
+credit$application_type[credit$application_type == ""] <- NA
+credit$application_type <- ifelse(
+  is.na(credit$application_type), NA,
+  ifelse(credit$application_type == "Joint App", 1, 0)
+)
+
+sum(is.na(credit$application_type))
+```
+
+
+```{r}
+str(credit$sec_app_earliest_cr_line)
+unique(credit$sec_app_earliest_cr_line)
+
+credit$sec_app_earliest_cr_line <- parse_date_time(credit$sec_app_earliest_cr_line, orders = "b-Y")
+sum(is.na(credit$sec_app_earliest_cr_line))
+
+```
+
+hardship_flag định dạng thành dạng nhị phân, "Y" gán bằng 1, "N" gán bằng 0, giữ nguyên missing values
+
+```{r}
+unique(credit$hardship_flag)
+
+credit$hardship_flag[credit$hardship_flag == ""] <- NA
+credit$hardship_flag <- ifelse(
+  is.na(credit$hardship_flag), NA,
+  ifelse(credit$hardship_flag == "Y", 1, 0)
+)
+
+sum(is.na(credit$hardship_flag))
+
+```
+
+```{r}
+str(credit$hardship_type)
+unique(credit$hardship_type)
+
+credit$has_hardship <- ifelse(
+  is.na(credit$hardship_type), NA,
+  ifelse(credit$hardship_type == "INTEREST ONLY-3 MONTHS DEFERRAL", 1, 0)
+)
+
+credit=dplyr::select(credit, -hardship_type)
+sum(is.na(credit$has_hardship))
+
+```
+
+
+```{r}
+unique(credit$hardship_reason)
+
+# Thay chuỗi rỗng thành NA
+credit$hardship_reason <- ifelse(credit$hardship_reason == "", NA, credit$hardship_reason)
+# Lưu giá trị NA để ghép lại sau
+na_index <- is.na(credit$hardship_reason)
+# Tạm thay NA bằng chuỗi "Missing" để model.matrix không loại dòng
+credit$hardship_reason_temp <- ifelse(na_index, "Missing", credit$hardship_reason)
+# Tạo dummy
+hardship_reason_dummies <- model.matrix(~ hardship_reason_temp - 1, data = credit)
+# Ghép lại vào dữ liệu
+credit <- cbind(credit, hardship_reason_dummies)
+credit <- dplyr::select(credit, -hardship_reason)
+
+```
+
+
+
+```{r}
+unique(credit$hardship_status)
+
+credit$hardship_status <- ifelse(
+  is.na(credit$hardship_status) | credit$hardship_status == "", NA,
+  match(credit$hardship_status, c("COMPLETED", "ACTIVE", "BROKEN"))
+)
+
+sum(is.na(credit$hardship_status))
+
+```
+
+```{r}
+unique(credit$hardship_start_date)
+unique(credit$hardship_end_date)
+
+sum(credit$hardship_start_date == "" | credit$hardship_start_date == "0000-00-00")
+sum(credit$hardship_end_date == "" | credit$hardship_end_date == "0000-00-00")
+
+credit$ever_hardship <- ifelse(
+  credit$hardship_start_date == "" | credit$hardship_start_date == "0000-00-00", 0, 1
+)
+
+table(credit$ever_hardship)
+credit=dplyr::select(credit, -hardship_start_date, -hardship_end_date)
+
+```
+
+```{r}
+unique(credit$payment_plan_start_date)
+sum(credit$payment_plan_start_date == "" | credit$payment_plan_start_date == "0000-00-00")
+
+credit$payment_plan <- ifelse(
+  credit$payment_plan == "" | credit$payment_plan == "0000-00-00", 0, 1
+)
+
+table(credit$payment_plan)
+
+```
+
+
+```{r}
+unique(credit$hardship_loan_status)
+
+# Xác định thứ bậc rủi ro tăng dần
+status_levels <- c("Current", "In Grace Period", "Late (16-30 days)", 
+                   "Late (31-120 days)", "Issued")
+
+
+# Gán NA cho chuỗi rỗng
+credit$hardship_loan_status <- ifelse(credit$hardship_loan_status == "", 
+                                       NA, credit$hardship_loan_status)
+
+# Tạo biến numeric thứ bậc
+credit$hardship_loan_status <- match(credit$hardship_loan_status, status_levels)
+
+sum(is.na(credit$hardship_loan_status))
+
+```
+
+
+```{r}
+unique(credit$disbursement_method)
+table(credit$disbursement_method)
+
+credit$disbursement_method[credit$disbursement_method == ""] <- NA
+credit$disbursement_method <- ifelse(credit$disbursement_method == "Cash", 1,
+                                     ifelse(credit$disbursement_method == "DirectPay", 0, NA))
+sum(is.na(credit$disbursement_method))
+
+```
+
+```{r}
+unique(credit$debt_settlement_flag)
+credit$debt_settlement_flag[credit$debt_settlement_flag == ""] <- NA
+credit$debt_settlement_flag <- ifelse(credit$debt_settlement_flag == "Y", 1,
+                                     ifelse(credit$debt_settlement_flag == "N", 0, NA))
+sum(is.na(credit$debt_settlement_flag))
+
+```
+
+```{r}
+unique(credit$debt_settlement_flag_date)
+
+credit$debt_settlement_flag_date <- parse_date_time(credit$debt_settlement_flag_date, orders = "b-Y")
+sum(is.na(credit$debt_settlement_flag_date))
+
+```
+
+
+```{r}
+unique(credit$settlement_status)
+
+credit$settlement_status <- ifelse(
+  is.na(credit$settlement_status) | credit$settlement_status == "", NA,
+  match(credit$settlement_status, c("COMPLETED", "ACTIVE", "BROKEN"))
+)
+
+sum(is.na(credit$settlement_status))
+
+```
+
+```{r}
+unique(credit$settlement_date)
+
+credit$settlement_date <- parse_date_time(credit$settlement_date, orders = "b-Y")
+sum(is.na(credit$settlement_date))
+
+```
+
+
+```{r}
+# Lọc ra các biến không phải là numeric
+non_numeric_vars <- names(credit)[!sapply(credit, is.numeric)]
+
+# In danh sách các biến
+print(non_numeric_vars)
+
+```
+
+
+```{r}
+unique(credit$verification_status)
+levels <- c("Not Verified", "Source Verified", "Verified")
+
+credit$verification_status[credit$verification_status == ""] <- NA
+credit$verification_status <- ifelse(
+  is.na(credit$verification_status), NA,
+  match(credit$verification_status, levels)
+)
+
+
+```
+
+```{r}
+unique(credit$verification_status_joint)
+levels <- c("Not Verified", "Source Verified", "Verified")
+
+credit$verification_status_joint[credit$verification_status_joint == ""] <- NA
+credit$verification_status_joint <- ifelse(
+  is.na(credit$verification_status_joint), NA,
+  match(credit$verification_status_joint, levels)
+)
+```
+
+
+```{r}
+credit=dplyr::select(credit, -home_ownership_temp)
+credit=dplyr::select(credit, -hardship_reason_temp)
+
+```
+
+
+
+```{r}
+str(credit$payment_plan_start_date)
+unique(credit$payment_plan_start_date)
+
+credit$payment_plan_start_date <- parse_date_time(credit$payment_plan_start_date, orders = "b-Y")
+sum(is.na(credit$payment_plan_start_date))
+
+```
+
+
+```{r}
+str(credit$next_pymnt_d)
+unique(credit$next_pymnt_d)
+
+credit$next_pymnt_d <- parse_date_time(credit$next_pymnt_d, orders = "b-Y")
+sum(is.na(credit$next_pymnt_d))
+
+
+```
+
+
+```{r}
+# Liệt kê tên các biến có kiểu Date hoặc POSIXt
+date_vars <- names(credit)[sapply(credit, function(x) inherits(x, c("Date", "POSIXt")))]
+print(date_vars)
+
+```
+
+```{r}
+max_dates <- sapply(credit[date_vars], function(x) max(x, na.rm = TRUE))
+print(max_dates)
+```
+Chuẩn hóa toàn bộ biến ngày tháng trong credit bằng cách quy đổi thành số ngày kể ti issue_d
+
+```{r}
+date_vars <- c(
+  "earliest_cr_line", "last_pymnt_d", "next_pymnt_d", "last_credit_pull_d", 
+  "sec_app_earliest_cr_line", "payment_plan_start_date", "debt_settlement_flag_date", 
+  "settlement_date", "lnext_pymnt_d"
+)
+
+#Tạo các biến mới tính theo số ngày so với issue_d
+for (var in date_vars) {
+  new_var_name <- paste0(var, "_since_issue")
+  credit[[new_var_name]] <- ifelse(
+    is.na(credit[[var]]) | is.na(credit$issue_d),
+    NA,
+    as.numeric(credit[[var]] - credit$issue_d)
+  )
+}
+
+credit <- select(credit, -all_of(date_vars))
+credit=dplyr::select(credit, -issue_d)
+```
+
+
+```{r}
+non_numeric_vars <- names(credit)[!sapply(credit, is.numeric)]
+print(non_numeric_vars)
+
+```
+
+```{r}
+write.csv(credit, "E:/NEU SLIDE/DATA SCIENCE/new credit.csv")
+```
+
+```{python}
+import pandas as pd
+
+credit= pd.read
+```
+
