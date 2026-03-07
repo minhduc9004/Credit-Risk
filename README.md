@@ -12,7 +12,7 @@ These preprocessing steps ensured that all variables were in a consistent numeri
 
 The original dataset contains approximately 2.26 million observations and 158 variables. Data preprocessing was conducted to address missing values and ensure consistency across different types of loan applications.
 Missing values were first analyzed by calculating the proportion of missing observations for each variable. 
-- For variables with a low missing rate (≤5%), observations containing missing values were removed.
+- For variables with a low missing rate, observations containing missing values were removed.
 - Variables with a high proportion of missing values were removed from the dataset, as they may reduce data quality and negatively affect model performance.
 
 After preprocessing and data cleaning, the final dataset contains 2,013,321 observations and 102 variables, which are used for subsequent modeling and analysis.
