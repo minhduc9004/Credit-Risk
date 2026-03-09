@@ -1,0 +1,411 @@
+---
+title: "Credit Data Processing"
+author: "Minh Duc Nguyen"
+date: "2025-04-06"
+output:
+  word_document: default
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r libraries}
+library(data.table)
+library(lubridate)
+library(dplyr)  # used only for model.matrix
+```
+
+```{r config}
+DATA_DIR     <- "E:/NEU SLIDE/DATA SCIENCE"
+INPUT_FILE   <- file.path(DATA_DIR, "credit.csv")
+INTERIM_FILE <- file.path(DATA_DIR, "new credit.csv")
+OUTPUT_FILE  <- file.path(DATA_DIR, "credit_cleaned.csv")
+```
+
+# Helper Functions
+
+```{r helpers}
+# Encode binary flag: "Y"/"N" -> 1/0, preserve NA
+encode_binary <- function(x, yes_val = "Y", no_val = "N") {
+  x[x == ""] <- NA
+  fifelse(is.na(x), NA_integer_,
+          fifelse(x == yes_val, 1L, 0L))
+}
+
+# Encode ordered factor -> integer rank, preserve NA
+encode_ordered <- function(x, levels_vec) {
+  x[x == ""] <- NA
+  match(x, levels_vec)
+}
+
+# Parse "Mon-YYYY" date strings -> POSIXct, preserve NA
+parse_mon_year <- function(x) {
+  x[x == ""] <- NA
+  parse_date_time(x, orders = "b-Y")
+}
+
+# Compute days elapsed since issue_d (vectorized)
+days_since_issue <- function(date_col, issue_d) {
+  ifelse(is.na(date_col) | is.na(issue_d), NA_real_,
+         as.numeric(date_col - issue_d))
+}
+
+# Merge individual + joint columns; joint takes priority when application_type == 1
+merge_joint <- function(dt, ind_col, joint_col, new_col) {
+  dt[, (new_col) := fifelse(
+    application_type == 1 & !is.na(get(joint_col)),
+    get(joint_col),
+    get(ind_col)
+  )]
+  dt[, c(ind_col, joint_col) := NULL]
+  invisible(dt)
+}
+
+# Print sorted missing value report
+missing_report <- function(dt, label = "") {
+  pct <- sort(colMeans(is.na(dt)) * 100, decreasing = TRUE)
+  pct <- pct[pct > 0]
+  cat("\n--- Missing report", label, "---\n")
+  cat("Variables with missing:", length(pct), "\n")
+  print(round(pct, 2))
+  invisible(pct)
+}
+```
+
+# Part 1 — Variable Encoding
+
+## 1. Load Data
+
+```{r load-raw}
+credit <- fread(INPUT_FILE)
+cat("Raw data:", nrow(credit), "rows,", ncol(credit), "columns\n")
+```
+
+## 2. Drop Non-informative Identifiers
+
+Columns such as `id`, `url`, `desc` carry no predictive signal and are removed.
+
+```{r drop-ids}
+drop_id_cols <- c("id", "member_id", "url", "desc", "title",
+                  "emp_title", "purpose", "zip_code", "addr_state")
+credit[, (intersect(drop_id_cols, names(credit))) := NULL]
+```
+
+## 3. Term
+
+Strip `" months"` suffix and convert to integer (36 or 60).
+
+```{r term}
+credit[, term := as.integer(gsub(" months", "", term))]
+```
+
+## 4. Grade & Sub-grade
+
+Ordered risk encoding: A = lowest risk (1), G = highest risk (7).
+Sub-grades run A1 (1) through G5 (35).
+
+```{r grade}
+grade_levels     <- c("A","B","C","D","E","F","G")
+sub_grade_levels <- paste0(rep(grade_levels, each = 5), rep(1:5, times = 7))
+
+credit[, grade     := encode_ordered(grade,     grade_levels)]
+credit[, sub_grade := encode_ordered(sub_grade, sub_grade_levels)]
+```
+
+## 5. Employment Length
+
+Map text categories to integer years (0–10).
+
+```{r emp-length}
+emp_map <- c("< 1 year" = 0L, "1 year"  = 1L, "2 years" = 2L,
+             "3 years"  = 3L, "4 years" = 4L, "5 years" = 5L,
+             "6 years"  = 6L, "7 years" = 7L, "8 years" = 8L,
+             "9 years"  = 9L, "10+ years" = 10L)
+credit[emp_length == "", emp_length := NA_character_]
+credit[, emp_length := emp_map[emp_length]]
+```
+
+## 6. Home Ownership
+
+One-hot encode via `model.matrix`. Missing values are treated as a separate `"Missing"` category.
+
+```{r home-ownership}
+credit[home_ownership == "", home_ownership := NA_character_]
+credit[, home_ownership_temp := fifelse(is.na(home_ownership), "Missing", home_ownership)]
+home_dummies <- model.matrix(~ home_ownership_temp - 1,
+                             data = as.data.frame(credit[, .(home_ownership_temp)]))
+credit <- cbind(credit, as.data.table(home_dummies))
+credit[, c("home_ownership", "home_ownership_temp") := NULL]
+```
+
+## 7. Issue Date
+
+Parse to `POSIXct` — used later as the reference point for all relative date features.
+
+```{r issue-date}
+credit[, issue_d := parse_mon_year(issue_d)]
+```
+
+## 8. Loan Status
+
+Ordered risk encoding: Fully Paid = 1 (lowest risk) → Default = 9 (highest risk).
+
+```{r loan-status}
+status_levels <- c(
+  "Fully Paid", "Current", "In Grace Period",
+  "Late (16-30 days)", "Late (31-120 days)",
+  "Does not meet the credit policy. Status:Fully Paid",
+  "Does not meet the credit policy. Status:Charged Off",
+  "Charged Off", "Default"
+)
+credit[, loan_status := encode_ordered(loan_status, status_levels)]
+```
+
+## 9. Binary Flags
+
+```{r binary-flags}
+credit[, pymnt_plan           := encode_binary(pymnt_plan,           "y",         "n")]
+credit[, initial_list_status  := encode_binary(initial_list_status,  "w",         "f")]
+credit[, hardship_flag        := encode_binary(hardship_flag,        "Y",         "N")]
+credit[, application_type     := encode_binary(application_type,     "Joint App", "Individual")]
+credit[, disbursement_method  := encode_binary(disbursement_method,  "Cash",      "DirectPay")]
+credit[, debt_settlement_flag := encode_binary(debt_settlement_flag, "Y",         "N")]
+```
+
+## 10. Date Columns
+
+Parse all remaining date columns to `POSIXct`.
+
+```{r parse-dates}
+date_cols <- c("earliest_cr_line", "last_pymnt_d", "next_pymnt_d",
+               "last_credit_pull_d", "sec_app_earliest_cr_line",
+               "payment_plan_start_date", "debt_settlement_flag_date",
+               "settlement_date")
+for (col in intersect(date_cols, names(credit))) {
+  credit[, (col) := parse_mon_year(get(col))]
+}
+```
+
+## 11. Hardship Type
+
+Derive a binary flag; `1` = interest-only deferral exists, `0` otherwise.
+
+```{r hardship-type}
+credit[, has_hardship := fifelse(
+  is.na(hardship_type), NA_integer_,
+  fifelse(hardship_type == "INTEREST ONLY-3 MONTHS DEFERRAL", 1L, 0L)
+)]
+credit[, hardship_type := NULL]
+```
+
+## 12. Hardship Reason
+
+One-hot encode via `model.matrix`. Missing values treated as `"Missing"` category.
+
+```{r hardship-reason}
+credit[hardship_reason == "", hardship_reason := NA_character_]
+credit[, hardship_reason_temp := fifelse(is.na(hardship_reason), "Missing", hardship_reason)]
+hardship_dummies <- model.matrix(~ hardship_reason_temp - 1,
+                                 data = as.data.frame(credit[, .(hardship_reason_temp)]))
+credit <- cbind(credit, as.data.table(hardship_dummies))
+credit[, c("hardship_reason", "hardship_reason_temp") := NULL]
+```
+
+## 13. Ordered Status Variables
+
+```{r ordered-status}
+credit[, hardship_status := encode_ordered(
+  hardship_status, c("COMPLETED", "ACTIVE", "BROKEN"))]
+credit[, hardship_loan_status := encode_ordered(
+  hardship_loan_status, c("Current", "In Grace Period",
+                          "Late (16-30 days)", "Late (31-120 days)", "Issued"))]
+credit[, settlement_status := encode_ordered(
+  settlement_status, c("COMPLETED", "ACTIVE", "BROKEN"))]
+```
+
+## 14. Hardship Dates → `ever_hardship` Flag
+
+```{r ever-hardship}
+credit[, ever_hardship := fifelse(
+  hardship_start_date == "" | hardship_start_date == "0000-00-00", 0L, 1L
+)]
+credit[, c("hardship_start_date", "hardship_end_date") := NULL]
+```
+
+## 15. Payment Plan → `has_payment_plan` Flag
+
+```{r payment-plan}
+credit[, has_payment_plan := fifelse(
+  is.na(payment_plan_start_date), 0L, 1L
+)]
+```
+
+## 16. Verification Status
+
+Ordered encoding: Not Verified = 1, Source Verified = 2, Verified = 3.
+
+```{r verification}
+verif_levels <- c("Not Verified", "Source Verified", "Verified")
+credit[, verification_status       := encode_ordered(verification_status,       verif_levels)]
+credit[, verification_status_joint := encode_ordered(verification_status_joint, verif_levels)]
+```
+
+## 17. Date Columns → Days Since Issue
+
+Convert all date columns to days elapsed since `issue_d`, then drop originals.
+
+```{r days-since-issue}
+date_cols_relative <- c("earliest_cr_line", "last_pymnt_d", "next_pymnt_d",
+                        "last_credit_pull_d", "sec_app_earliest_cr_line",
+                        "payment_plan_start_date", "debt_settlement_flag_date",
+                        "settlement_date")
+date_cols_relative <- intersect(date_cols_relative, names(credit))
+for (col in date_cols_relative) {
+  credit[, (paste0(col, "_since_issue")) := days_since_issue(get(col), issue_d)]
+}
+credit[, c(date_cols_relative, "issue_d") := NULL]
+```
+
+## 18. Final Check
+
+```{r check-encoding}
+non_numeric <- names(credit)[!sapply(credit, is.numeric)]
+cat("Non-numeric columns remaining:", length(non_numeric), "\n")
+if (length(non_numeric) > 0) print(non_numeric)
+```
+
+## 19. Save Interim File
+
+```{r save-interim}
+fwrite(credit, INTERIM_FILE)
+cat("Saved:", INTERIM_FILE, "\n")
+cat("Size:", nrow(credit), "rows,", ncol(credit), "columns\n")
+```
+
+# Part 2 — Missing Value Handling
+
+## 1. Load Interim File
+
+```{r load-interim}
+credit <- fread(INTERIM_FILE)
+cat("Loaded:", nrow(credit), "rows,", ncol(credit), "columns\n")
+if ("V1" %in% names(credit)) credit[, V1 := NULL]
+```
+
+## 2. Merge Individual / Joint Columns
+
+When `application_type == 1` (Joint App), the joint value takes priority.
+
+| New column | Individual source | Joint source |
+|---|---|---|
+| `income_used` | `annual_inc` | `annual_inc_joint` |
+| `dti_used` | `dti` | `dti_joint` |
+| `revol_bal_used` | `revol_bal` | `revol_bal_joint` |
+| `verification_status_used` | `verification_status` | `verification_status_joint` |
+
+```{r merge-joint}
+merge_joint(credit, "annual_inc",          "annual_inc_joint",          "income_used")
+merge_joint(credit, "dti",                 "dti_joint",                 "dti_used")
+merge_joint(credit, "revol_bal",           "revol_bal_joint",           "revol_bal_used")
+merge_joint(credit, "verification_status", "verification_status_joint", "verification_status_used")
+```
+
+## 3. Missing Value Report
+
+```{r missing-report}
+missing_report(credit, "after joint merge")
+```
+
+## 4. Three-Tier Missing Strategy
+
+| Missing rate | Action | Rationale |
+|---|---|---|
+| ≤ 5% | Drop rows | Safe to remove — minimal data loss |
+| 5% – 50% | Drop columns | Too sparse to impute reliably |
+| > 50% | Drop columns | Majority missing — no useful signal |
+
+### 4a. Drop Rows (≤ 5% missing)
+
+```{r drop-rows}
+drop_rows_vars <- intersect(c(
+  "loan_amnt", "income_used", "dti_used", "delinq_2yrs",
+  "inq_last_6mths", "revol_util", "collections_12_mths_ex_med",
+  "tot_coll_amt", "bc_open_to_buy", "bc_util",
+  "mo_sin_old_il_acct", "mths_since_recent_bc",
+  "num_rev_accts", "num_tl_120dpd_2m", "pct_tl_nvr_dlq",
+  "last_pymnt_d_since_issue", "last_credit_pull_d_since_issue"
+), names(credit))
+
+before <- nrow(credit)
+credit <- na.omit(credit, cols = drop_rows_vars)
+cat("Dropped rows:", before - nrow(credit), "| Remaining:", nrow(credit), "\n")
+```
+
+### 4b. Drop Columns (5–50% missing)
+
+```{r drop-cols-medium}
+drop_cols_medium <- intersect(c(
+  "open_acc_6m", "open_act_il", "open_il_12m", "open_il_24m",
+  "mths_since_rcnt_il", "total_bal_il", "il_util",
+  "open_rv_12m", "open_rv_24m", "max_bal_bc", "all_util",
+  "inq_fi", "total_cu_tl", "inq_last_12m",
+  "mths_since_recent_inq", "emp_length"
+), names(credit))
+credit[, (drop_cols_medium) := NULL]
+cat("Dropped columns (5-50%):", length(drop_cols_medium), "\n")
+```
+
+### 4c. Drop Columns (> 50% missing)
+
+```{r drop-cols-high}
+drop_cols_high <- intersect(c(
+  "mths_since_last_delinq", "mths_since_recent_revol_delinq",
+  "mths_since_recent_bc_dlq", "mths_since_last_record",
+  "mths_since_last_major_derog",
+  "sec_app_fico_range_low", "sec_app_fico_range_high",
+  "sec_app_inq_last_6mths", "sec_app_mort_acc", "sec_app_open_acc",
+  "sec_app_revol_util", "sec_app_open_act_il", "sec_app_num_rev_accts",
+  "sec_app_chargeoff_within_12_mths",
+  "sec_app_collections_12_mths_ex_med",
+  "sec_app_mths_since_last_major_derog",
+  "deferral_term", "hardship_amount", "hardship_length", "hardship_dpd",
+  "orig_projected_additional_accrued_interest",
+  "hardship_payoff_balance_amount", "hardship_last_payment_amount",
+  "settlement_amount", "settlement_percentage", "settlement_term",
+  "hardship_status", "hardship_loan_status", "settlement_status",
+  "next_pymnt_d_since_issue", "sec_app_earliest_cr_line_since_issue",
+  "payment_plan_start_date_since_issue",
+  "debt_settlement_flag_date_since_issue",
+  "settlement_date_since_issue", "lnext_pymnt_d_since_issue"
+), names(credit))
+credit[, (drop_cols_high) := NULL]
+cat("Dropped columns (>50%):", length(drop_cols_high), "\n")
+```
+
+## 5. Final Check
+
+```{r final-check}
+cat("Total missing values remaining:", sum(is.na(credit)), "\n")
+cat("Final size:", nrow(credit), "rows,", ncol(credit), "columns\n")
+```
+
+## 6. Save Output
+
+```{r save-output}
+fwrite(credit, OUTPUT_FILE)
+cat("Saved:", OUTPUT_FILE, "\n")
+```
+
+## 7. Free RAM
+
+```{r free-ram}
+rm(list = ls())
+gc()
+cat("RAM cleared\n")
+```
