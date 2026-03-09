@@ -1,3 +1,13 @@
+# Credit Risk Modeling — Lending Club Dataset
+## Dataset
+The dataset used in this project is the **Lending Club Loan Data**, publicly available on Kaggle.
+It contains real loan records issued through the Lending Club peer-to-peer lending platform
+between 2007 and 2018, covering over 2.26 million observations and 150+ variables.
+
+Each row represents a single loan and includes information available at the time of application
+(borrower demographics, credit bureau attributes, loan terms) as well as post-origination
+outcomes (payment history, default status, recovery amounts).
+
 Dataset is too large for GitHub.
 Download Raw Data from:
 https://drive.google.com/file/d/1KZ8tMBhNlpTZTmRVzqqGyHLQNMVdI00e/view?usp=sharing
