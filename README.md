@@ -75,7 +75,7 @@ $$EL_{\text{portfolio}} = \sum_{i=1}^{N} PD_i \times LGD \times EAD_i$$
 
 IV measures the **discriminatory power** of a variable in separating Good from Bad loans:
 
-$$IV = \sum_{i=1}^{k} \left( \%Good_i - \%Bad_i \right) \times \ln\left(\frac{\%Good_i}{\%Bad_i}\right)$$\
+$$IV = \sum_{i=1}^{k} \left( \%Good_i - \%Bad_i \right) \times \ln\left(\frac{\%Good_i}{\%Bad_i}\right)$$
 
 where $k$ is the number of bins for the variable.
 
