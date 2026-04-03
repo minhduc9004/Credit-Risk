@@ -210,7 +210,7 @@ For unsecured retail exposures, Basel II prescribes a **supervisory LGD of 45%**
 
 ---
 
-## 🛠️ Tools & Libraries
+## Tools & Libraries
 
 | Category | Tools |
 |----------|-------|
