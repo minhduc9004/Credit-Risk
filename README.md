@@ -89,21 +89,6 @@ where $k$ is the number of bins for the variable.
 | 0.30 – 0.50 | Strong |
 | > 0.50 | Very Strong |
 
-**Top 10 Variables by IV:**
-
-| Variable | Description | IV | Power |
-|----------|-------------|-----|-------|
-| installment | Monthly installment amount | 1.0315 | Very Strong |
-| int_rate | Interest rate | 0.8411 | Very Strong |
-| revol_bal_used | Revolving balance utilization | 0.6007 | Very Strong |
-| bc_open_to_buy | Open-to-buy on bankcard | 0.5958 | Very Strong |
-| avg_cur_bal | Average current balance | 0.5946 | Very Strong |
-| income_used | Income used for underwriting | 0.5796 | Very Strong |
-| sub_grade | LC loan sub-grade | 0.5444 | Very Strong |
-| grade | LC loan grade | 0.5020 | Very Strong |
-| total_il_high_credit_limit | Total installment high credit limit | 0.4980 | Very Strong |
-| total_bal_ex_mort | Total balance excl. mortgage | 0.3595 | Strong |
-
 ---
 
 ### 4. Weight of Evidence (WoE)
